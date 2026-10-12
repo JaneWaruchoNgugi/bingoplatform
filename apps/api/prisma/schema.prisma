@@ -1,0 +1,277 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  BANNED
+}
+
+model User {
+  id           String     @id @default(uuid())
+  username     String     @unique
+  email        String?    @unique
+  passwordHash String?    @map("password_hash")
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("users")
+}
+
+// ─── Bingo ────────────────────────────────────────────────────────────────────
+
+enum RoundStatus {
+  SCHEDULED
+  OPEN_FOR_SALE
+  SALES_CLOSED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum PurchaseStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+enum ClaimStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  ALLOCATED
+  SETTLED
+}
+
+enum AllocationStatus {
+  PENDING
+  SETTLED
+  FAILED
+}
+
+model BingoCategory {
+  id                   String   @id @default(uuid())
+  name                 String   @unique
+  slug                 String   @unique
+  description          String?
+  isActive             Boolean  @default(true) @map("is_active")
+  priceMinorUnits      Int      @map("price_minor_units")
+  currency             String   @default("KES")
+  maxTicketsPerPurchase Int     @default(10) @map("max_tickets_per_purchase")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  rounds BingoRound[]
+
+  @@map("bingo_categories")
+}
+
+model BingoRound {
+  id                 String      @id @default(uuid())
+  categoryId         String      @map("category_id")
+  category           BingoCategory @relation(fields: [categoryId], references: [id])
+  status             RoundStatus @default(SCHEDULED)
+  scheduledStart     DateTime    @map("scheduled_start")
+  salesDeadline      DateTime    @map("sales_deadline")
+  startedAt          DateTime?   @map("started_at")
+  completedAt        DateTime?   @map("completed_at")
+  cancelledAt        DateTime?   @map("cancelled_at")
+  cancellationReason String?     @map("cancellation_reason")
+  maxTickets         Int?        @map("max_tickets")
+  totalTickets       Int         @default(0) @map("total_tickets")
+  version            Int         @default(0)
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  prizeRules       BingoPrizeRule[]
+  purchases        BingoPurchase[]
+  tickets          BingoTicket[]
+  drawEvents       BingoDrawEvent[]
+  winClaims        BingoWinClaim[]
+  prizeAllocations BingoPrizeAllocation[]
+  auditEvents      BingoAuditEvent[]
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([scheduledStart])
+  @@map("bingo_rounds")
+}
+
+model BingoPrizeRule {
+  id              String   @id @default(uuid())
+  roundId         String   @map("round_id")
+  round           BingoRound @relation(fields: [roundId], references: [id])
+  name            String
+  pattern         Json
+  prizeMinorUnits Int?     @map("prize_minor_units")
+  prizePercentage Decimal? @map("prize_percentage") @db.Decimal(5, 2)
+  callLimit       Int?     @map("call_limit")
+  priority        Int      @default(0)
+  isActive        Boolean  @default(true) @map("is_active")
+
+  winClaims BingoWinClaim[]
+
+  @@index([roundId])
+  @@map("bingo_prize_rules")
+}
+
+model BingoPurchase {
+  id             String         @id @default(uuid())
+  roundId        String         @map("round_id")
+  round          BingoRound     @relation(fields: [roundId], references: [id])
+  playerId       String         @map("player_id")
+  status         PurchaseStatus @default(PENDING)
+  ticketCount    Int            @map("ticket_count")
+  pricePerTicket Int            @map("price_per_ticket")
+  totalAmount    Int            @map("total_amount")
+  currency       String         @default("KES")
+  idempotencyKey String         @unique @map("idempotency_key")
+  financialRefId String?        @unique @map("financial_ref_id")
+  financialRef   BingoFinancialReference? @relation(fields: [financialRefId], references: [id])
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  tickets BingoTicket[]
+
+  @@index([roundId])
+  @@index([playerId])
+  @@map("bingo_purchases")
+}
+
+model BingoTicket {
+  id           String   @id @default(uuid())
+  roundId      String   @map("round_id")
+  round        BingoRound @relation(fields: [roundId], references: [id])
+  purchaseId   String   @map("purchase_id")
+  purchase     BingoPurchase @relation(fields: [purchaseId], references: [id])
+  playerId     String   @map("player_id")
+  serialNumber String   @unique @map("serial_number")
+  isVoid       Boolean  @default(false) @map("is_void")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  card      BingoCard?
+  winClaims BingoWinClaim[]
+
+  @@index([roundId])
+  @@index([playerId])
+  @@index([purchaseId])
+  @@map("bingo_tickets")
+}
+
+model BingoCard {
+  id        String      @id @default(uuid())
+  ticketId  String      @unique @map("ticket_id")
+  ticket    BingoTicket @relation(fields: [ticketId], references: [id])
+  numbers   Int[]
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  @@map("bingo_cards")
+}
+
+model BingoDrawEvent {
+  id       String     @id @default(uuid())
+  roundId  String     @map("round_id")
+  round    BingoRound @relation(fields: [roundId], references: [id])
+  sequence Int
+  number   Int
+  drawnAt  DateTime   @default(now()) @map("drawn_at")
+  drawnBy  String     @map("drawn_by")
+
+  @@unique([roundId, sequence])
+  @@unique([roundId, number])
+  @@index([roundId])
+  @@map("bingo_draw_events")
+}
+
+model BingoWinClaim {
+  id          String      @id @default(uuid())
+  roundId     String      @map("round_id")
+  round       BingoRound  @relation(fields: [roundId], references: [id])
+  ticketId    String      @map("ticket_id")
+  ticket      BingoTicket @relation(fields: [ticketId], references: [id])
+  prizeRuleId String      @map("prize_rule_id")
+  prizeRule   BingoPrizeRule @relation(fields: [prizeRuleId], references: [id])
+  playerId    String      @map("player_id")
+  status      ClaimStatus @default(PENDING)
+  verifiedAt  DateTime?   @map("verified_at")
+  claimedAt   DateTime    @default(now()) @map("claimed_at")
+
+  allocations BingoPrizeAllocation[]
+
+  @@unique([ticketId, prizeRuleId])
+  @@index([roundId])
+  @@index([playerId])
+  @@map("bingo_win_claims")
+}
+
+model BingoPrizeAllocation {
+  id               String           @id @default(uuid())
+  roundId          String           @map("round_id")
+  round            BingoRound       @relation(fields: [roundId], references: [id])
+  claimId          String           @unique @map("claim_id")
+  claim            BingoWinClaim    @relation(fields: [claimId], references: [id])
+  playerId         String           @map("player_id")
+  amountMinorUnits Int              @map("amount_minor_units")
+  currency         String           @default("KES")
+  status           AllocationStatus @default(PENDING)
+  financialRefId   String?          @unique @map("financial_ref_id")
+  financialRef     BingoFinancialReference? @relation(fields: [financialRefId], references: [id])
+  settledAt        DateTime?        @map("settled_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  @@index([roundId])
+  @@index([playerId])
+  @@map("bingo_prize_allocations")
+}
+
+model BingoFinancialReference {
+  id               String   @id @default(uuid())
+  externalRef      String   @unique @map("external_ref")
+  type             String
+  amountMinorUnits Int      @map("amount_minor_units")
+  currency         String   @default("KES")
+  status           String   @default("PENDING")
+  playerId         String   @map("player_id")
+  metadata         Json?
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  purchases   BingoPurchase[]
+  allocations BingoPrizeAllocation[]
+
+  @@index([externalRef])
+  @@index([playerId])
+  @@map("bingo_financial_references")
+}
+
+model BingoAuditEvent {
+  id         String      @id @default(uuid())
+  roundId    String?     @map("round_id")
+  round      BingoRound? @relation(fields: [roundId], references: [id])
+  actorId    String      @map("actor_id")
+  actorRole  String      @map("actor_role")
+  action     String
+  targetType String      @map("target_type")
+  targetId   String      @map("target_id")
+  metadata   Json?
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  @@index([roundId])
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("bingo_audit_events")
+}
