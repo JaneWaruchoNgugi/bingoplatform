@@ -10,8 +10,9 @@
  *   ticket:update    – server → client: ticket win state change
  *   round:completed  – server → client: round over, final results
  *
- * Auth: player ID is taken from x-mock-player-id header (dev/test).
- * Production: replace with JWT verification in the 'connection' middleware.
+ * Auth (production): Bearer token via socket.handshake.auth.token or
+ *   the Authorization header on the upgrade request. Mock header ignored.
+ * Auth (dev/test): Bearer first; x-mock-player-id header as fallback.
  *
  * Multi-instance: configure socket.io Redis adapter at the server level.
  * Currently single-instance; reconnects recover from PostgreSQL, not Redis.
@@ -44,7 +45,12 @@ export function initSocket(httpServer: HttpServer): Server {
     void (async () => {
       try {
         const adapter = getAuthAdapter();
-        const bearerToken = socket.handshake.auth?.token as string | undefined;
+        // Accept Bearer from either socket.handshake.auth.token or the
+        // Authorization header on the upgrade request (both are TLS-protected).
+        const authHeader = socket.handshake.headers['authorization'] as string | undefined;
+        const bearerToken =
+          (socket.handshake.auth?.token as string | undefined) ??
+          authHeader?.replace(/^Bearer\s+/i, '');
 
         if (config.NODE_ENV === 'production') {
           // Mock header is explicitly ignored in production — any client can set
