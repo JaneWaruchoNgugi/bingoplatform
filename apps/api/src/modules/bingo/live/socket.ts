@@ -22,7 +22,7 @@ import { Server, type Socket } from 'socket.io';
 import { prisma } from '../../../lib/prisma';
 import { logger } from '../../../lib/logger';
 import { config } from '../../../config';
-import { MOCK_PLAYER_HEADER } from '../../../lib/auth';
+import { MOCK_PLAYER_HEADER, getAuthAdapter } from '../../../lib/auth';
 
 let _io: Server | null = null;
 
@@ -37,17 +37,40 @@ export function initSocket(httpServer: HttpServer): Server {
     transports: ['websocket', 'polling'],
   });
 
-  // Auth middleware
+  // Auth middleware — mirrors requirePlayer in src/middleware/auth.ts.
+  // Production: mock header is never read; a verified Bearer token is required.
+  // Dev/test: Bearer token takes precedence; mock header accepted as fallback.
   io.use((socket, next) => {
-    const playerId =
-      (socket.handshake.headers[MOCK_PLAYER_HEADER] as string | undefined) ??
-      socket.handshake.auth?.playerId as string | undefined;
+    void (async () => {
+      try {
+        const adapter = getAuthAdapter();
+        const bearerToken = socket.handshake.auth?.token as string | undefined;
 
-    if (!playerId && config.NODE_ENV === 'production') {
-      return next(new Error('Authentication required'));
-    }
-    (socket as Socket & { playerId?: string }).playerId = playerId ?? 'anonymous';
-    next();
+        if (config.NODE_ENV === 'production') {
+          // Mock header is explicitly ignored in production — any client can set
+          // arbitrary headers, so accepting it would be an auth bypass.
+          if (!bearerToken) return next(new Error('Authentication required'));
+          const player = await adapter.verifyPlayerToken(bearerToken);
+          if (!player) return next(new Error('Authentication required'));
+          (socket as Socket & { playerId?: string }).playerId = player.playerId;
+          return next();
+        }
+
+        // Non-production: try Bearer first, fall back to mock header.
+        let playerId: string | undefined;
+        if (bearerToken) {
+          const player = await adapter.verifyPlayerToken(bearerToken);
+          playerId = player?.playerId;
+        } else {
+          playerId = socket.handshake.headers[MOCK_PLAYER_HEADER] as string | undefined;
+        }
+
+        (socket as Socket & { playerId?: string }).playerId = playerId ?? 'anonymous';
+        next();
+      } catch (err) {
+        next(err as Error);
+      }
+    })();
   });
 
   io.on('connection', (socket) => {
